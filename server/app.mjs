@@ -243,15 +243,6 @@ export async function createApp({
     });
     res.status(201).json({ id: asset.id });
   });
-  app.get("/api/admin/catalog-uploads", auth, admin, (req, res) =>
-    res.json({
-      references: assets.list(req.user.id, "reference"),
-      previews: assets.list(req.user.id, "preview"),
-    }),
-  );
-  app.delete("/api/assets/:id", auth, (req, res) =>
-    res.json(assets.removeOwned(req.params.id, req.user.id)),
-  );
   app.post(
     "/api/admin/catalog-preview-uploads",
     auth,
@@ -415,26 +406,6 @@ export async function createApp({
   app.post("/api/admin/jobs/:id/recover", auth, admin, (req, res) =>
     res.json({ job: serialize(engine.recover(req.params.id, req.user.id)) }),
   );
-  app.post("/api/admin/jobs/:id/replay", auth, admin, (req, res) => {
-    const job = db.prepare("SELECT * FROM jobs WHERE id=?").get(req.params.id);
-    if (!job || job.status !== "completed") throw fail(409, "请选一个已完成任务演示事件重放。");
-    const cost = db.prepare("SELECT cost_units FROM provider_costs WHERE job_id=?").get(job.id);
-    if (!cost) throw fail(409, "任务没有可重放的供应商记录。");
-    transaction(() =>
-      engine.event(
-        job.id,
-        "admin_replay",
-        `管理员 ${req.user.id} 注入 3 次重复成功和 1 次过期处理中事件（模拟事件，不是真实回调）`,
-      ),
-    );
-    for (const status of ["succeeded", "succeeded", "succeeded", "running"])
-      engine.applyProviderEvent(job.id, {
-        id: job.provider_id,
-        status,
-        costUnits: cost.cost_units,
-      });
-    res.json({ ok: true });
-  });
   app.get("/api/ledger", auth, (req, res) =>
     res.json({
       ledger: db

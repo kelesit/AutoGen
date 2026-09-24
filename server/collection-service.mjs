@@ -42,7 +42,10 @@ export function createCollectionService(db) {
         "SELECT COUNT(*) n FROM jobs WHERE user_id=? AND status NOT IN ('completed','failed','cancelled')",
       )
       .get(userId).n;
-    return { jobs, totalCreations, activeTasks };
+    const reviewTasks = db
+      .prepare("SELECT COUNT(*) n FROM jobs WHERE user_id=? AND status='needs_review'")
+      .get(userId).n;
+    return { jobs, totalCreations, activeTasks, reviewTasks };
   }
   return { findByJob, requireOwned, list, remove, feed };
 }

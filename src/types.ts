@@ -28,7 +28,7 @@ export interface Template {
   category: string;
   creator: string;
   image: string;
-  tag: string;
+  tags: string[];
   uses: number;
   color: string;
   favorite: boolean;
@@ -79,6 +79,7 @@ export interface Job {
   duration: number;
   prompt: string;
   created_at: number;
+  accepted_at: number | null;
   output_url: string | null;
   creation_id?: string | null;
   creation_deleted?: boolean;
@@ -110,7 +111,7 @@ export interface AdminData {
   users: User[];
   ledger: Ledger[];
 }
-export type Page = "explore" | "collection" | "favorites" | "credits" | "admin";
+export type Page = "explore" | "collection" | "credits" | "admin";
 export interface JobDetail {
   job: Job;
   events: { id: number; kind: string; message: string; created_at: number }[];

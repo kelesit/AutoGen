@@ -81,11 +81,6 @@ test("管理员发布动作模板后，普通用户能在广场使用并在作�
   );
   assert.equal(reference.status, 201);
   assert.equal(preview.status, 201);
-  const reusable = await request("/admin/catalog-uploads", { cookie: admin.cookie });
-  assert.equal(reusable.status, 200);
-  assert.equal(reusable.data.references[0].id, reference.data.id);
-  assert.equal(reusable.data.previews[0].id, preview.data.id);
-  assert.equal((await request("/admin/catalog-uploads", { cookie: user.cookie })).status, 403);
   assert.equal(
     (
       await upload(
@@ -230,6 +225,12 @@ test("管理员发布动作模板后，普通用户能在广场使用并在作�
   const b = await upload("/uploads", user.cookie, "image", pixels, "image/jpeg", "b.jpg");
   assert.equal(a.status, 201);
   assert.equal(b.status, 201);
+  const quote = await request("/quote", {
+    method: "POST",
+    cookie: user.cookie,
+    body: { templateId: template.id, resolution: "720p", duration: 4 },
+  });
+  assert.equal(quote.status, 200);
   const job = await request("/jobs", {
     method: "POST",
     cookie: user.cookie,
@@ -240,6 +241,8 @@ test("管理员发布动作模板后，普通用户能在广场使用并在作�
       uploadIds: { person_a: a.data.id, person_b: b.data.id },
       resolution: "720p",
       duration: 4,
+      expectedCost: quote.data.cost,
+      priceVersion: quote.data.version,
       prompt: "",
     },
   });

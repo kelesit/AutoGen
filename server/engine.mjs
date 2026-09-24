@@ -269,9 +269,16 @@ export function createEngine({
           event(job.id, "not_accepted", "模拟供应商权威查单确认未接单，允许按预算重新排队");
           retry(latest, "submit", "提交未成功且权威查单确认未接单");
         } else {
+          const now = Date.now();
+          const acceptedAt =
+            Number.isSafeInteger(result.created_at) &&
+            result.created_at >= job.created_at &&
+            result.created_at <= now
+              ? result.created_at
+              : now;
           db.prepare(
-            "UPDATE jobs SET provider_id=?,status='running',progress=35,error=NULL,retries=0 WHERE id=?",
-          ).run(result.id, job.id);
+            "UPDATE jobs SET provider_id=?,accepted_at=COALESCE(accepted_at,?),status='running',progress=35,error=NULL,retries=0 WHERE id=?",
+          ).run(result.id, acceptedAt, job.id);
           event(
             job.id,
             phase === "lookup" ? "reconciled" : "accepted",
@@ -280,7 +287,7 @@ export function createEngine({
           schedule(job.id, pollMs);
         }
       } else if (phase === "poll") {
-        if (Date.now() - job.created_at > 180000 && result.status === "running")
+        if (Date.now() - (job.accepted_at ?? job.created_at) > 180000 && result.status === "running")
           review(latest, "poll", "超过生成等待上限，供应商最终结果仍待核查");
         else {
           applyResult(latest, result);

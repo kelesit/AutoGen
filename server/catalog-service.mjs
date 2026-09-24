@@ -56,6 +56,16 @@ function validateReferences(ids) {
     throw fail(400, "请选择 1–3 段动作参考视频。");
 }
 
+function normalizeTags(tags) {
+  if (!Array.isArray(tags) || tags.length > 12 ||
+      !tags.every((tag) => typeof tag === "string" && tag.trim().length > 0 && tag.trim().length <= 30))
+    throw fail(400, "标签无效：最多 12 个，每个不超过 30 个字。");
+  const normalized = tags.map((tag) => tag.trim());
+  if (new Set(normalized.map((tag) => tag.toLocaleLowerCase())).size !== normalized.length)
+    throw fail(400, "标签不能重复。");
+  return normalized;
+}
+
 export const defaultOutputOptions = {
   default: { duration: 4, resolution: "720p" },
   allowedDurations: [4, 8],
@@ -84,9 +94,9 @@ export function createCatalogService(db, assets) {
       title: row.title,
       subtitle: row.description,
       category: row.category,
+      tags: JSON.parse(row.tags),
       creator: row.creator_name,
       image: "coast",
-      tag: row.status === "public" ? "NEW" : "私有",
       favorite: false,
       uses: db
         .prepare("SELECT COUNT(*) AS n FROM jobs WHERE template_id=? AND status='completed'")
@@ -150,6 +160,7 @@ export function createCatalogService(db, assets) {
       title,
       description = "",
       category = "动作",
+      tags = [],
       referenceVideoIds,
       previewVideoId,
       inputSlots,
@@ -170,6 +181,7 @@ export function createCatalogService(db, assets) {
     )
       throw fail(400, "模板信息无效。");
     validateReferences(referenceVideoIds);
+    const normalizedTags = normalizeTags(tags);
     if (typeof previewVideoId !== "string") throw fail(400, "请上传示例成片。");
     validateSlots(inputSlots);
     const options = outputOptions || defaultOutputOptions;
@@ -178,6 +190,7 @@ export function createCatalogService(db, assets) {
       title: title.trim(),
       description: description.trim(),
       category: category.trim(),
+      tags: normalizedTags,
       referenceVideoIds,
       previewVideoId,
       inputSlots: inputSlots.map((slot) => ({ ...slot, label: slot.label.trim() })),
@@ -199,13 +212,14 @@ export function createCatalogService(db, assets) {
         versionId = randomUUID(),
         now = Date.now();
       db.prepare(`INSERT INTO templates
-        (id,owner_id,title,description,category,status,create_key,create_payload,created_at,updated_at,published_at)
-        VALUES (?,?,?,?,?,'public',?,?,?,?,?)`).run(
+        (id,owner_id,title,description,category,tags,status,create_key,create_payload,created_at,updated_at,published_at)
+        VALUES (?,?,?,?,?,?,'public',?,?,?,?,?)`).run(
         id,
         ownerId,
         normalized.title,
         normalized.description,
         normalized.category,
+        JSON.stringify(normalized.tags),
         key,
         payload,
         now,
@@ -241,6 +255,7 @@ export function createCatalogService(db, assets) {
       title,
       description,
       category,
+      tags,
       status,
       previewVideoId,
       inputSlots,
@@ -262,6 +277,7 @@ export function createCatalogService(db, assets) {
         title: title === undefined ? row.title : title,
         description: description === undefined ? row.description : description,
         category: category === undefined ? row.category : category,
+        tags: tags === undefined ? JSON.parse(row.tags) : normalizeTags(tags),
       };
       if (
         typeof next.title !== "string" ||
@@ -333,11 +349,12 @@ export function createCatalogService(db, assets) {
       }
       if (replacement) previewId = replacement.id;
       if (status === "public" && !previewId) throw fail(409, "请先设置示例成片再上架。");
-      db.prepare(`UPDATE templates SET title=?,description=?,category=?,status=?,
+      db.prepare(`UPDATE templates SET title=?,description=?,category=?,tags=?,status=?,
         current_version_id=?,preview_asset_id=?,updated_at=?,published_at=? WHERE id=?`).run(
         next.title.trim(),
         next.description.trim(),
         next.category.trim(),
+        JSON.stringify(next.tags),
         status ?? row.status,
         versionId,
         previewId,
@@ -365,7 +382,7 @@ export function createCatalogService(db, assets) {
     const where = [status === "all" ? "t.status!='deleted'" : "t.status=?"];
     const args = status === "all" ? [] : [status];
     if (q.trim()) {
-      where.push("instr(lower(t.title || ' ' || t.description || ' ' || t.id),lower(?))>0");
+      where.push("instr(lower(t.title || ' ' || t.description || ' ' || t.id || ' ' || t.tags),lower(?))>0");
       args.push(q.trim());
     }
     if (category) {

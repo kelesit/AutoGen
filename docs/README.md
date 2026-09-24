@@ -2,13 +2,15 @@
 
 当前实现从以下文档开始阅读：
 
-1. [项目说明](../README.md)：运行方式、账户、范围和限制。
-2. [重构基线](refactor-baseline.md)：业务决定、服务分工和对象关系。
-3. [模板与生成结构](motion-template.md)：配置、版本、接口和输入限制。
-4. [媒体生命周期](media-lifecycle-design.md)：文件存储、引用、权限和删除。
-5. [任务与账务架构](../ARCHITECTURE.md)：状态机、事务、恢复和并发。
-6. [演示指南](../DEMO_GUIDE.md)：操作步骤与预期结果。
-7. [文档与代码核对](doc-code-audit-2026-09-24.md)：差异修正与仍待完善的能力。
+1. [项目说明](../README.md)：业务闭环、关键步骤、运行方式、账户和范围。
+2. [功能需求与验收清单](functional-requirements.md)：角色、前置条件、正常与异常流程、验收标准、现有证据和待完善项。
+3. [重构基线](refactor-baseline.md)：业务决定、服务分工和对象关系。
+4. [关键数据模型](data-models.md)：核心表、关系、状态、快照与账务不变量。
+5. [模板与生成结构](motion-template.md)：配置、版本、接口和输入限制。
+6. [媒体生命周期](media-lifecycle-design.md)：文件存储、引用、权限和删除。
+7. [任务与账务架构](../ARCHITECTURE.md)：状态机、事务、恢复和并发。
+8. [演示指南](../DEMO_GUIDE.md)：操作步骤与预期结果。
+9. [文档与代码核对](doc-code-audit-2026-09-24.md)：差异修正与仍待完善的能力。
 
 [历史走查](archive/business-flow-audit-2026-09-23.md) 保存当时的故障和验收记录，不作为当前功能规范。[H3 实验](../experiments/h3-motion/README.md) 独立归档，不参与当前生成业务。
 

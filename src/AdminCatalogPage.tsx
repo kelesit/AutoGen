@@ -2,22 +2,20 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, post } from "./api";
 import type { AdminTemplate } from "./types";
 import { CatalogManager } from "./CatalogManager";
+import { TagInput } from "./TagInput";
 
 type SlotMode = "single" | "duo";
-type SavedVideo = { id: string; bytes: number; createdAt: number };
-type AssetMode = "new" | "saved";
 type Draft = {
   title: string;
   description: string;
   category: string;
+  tags: string[];
   mode: SlotMode;
   promptRecipe: string;
   roles: string[];
   durations: number[];
   resolutions: string[];
   allowUserPrompt: boolean;
-  selectedReferences: string[];
-  selectedPreview: string;
   requestKey: string;
   lastPayload: string;
   needsFiles: boolean;
@@ -44,25 +42,13 @@ export function AdminCatalogPage({
   const [revision, setRevision] = useState(0);
   const [title, setTitle] = useState(draft.title ?? "");
   const [description, setDescription] = useState(draft.description ?? "");
-  const [category, setCategory] = useState(draft.category ?? "动作");
+  const [tags, setTags] = useState<string[]>(draft.tags ?? (draft.category ? [draft.category] : []));
   const [mode, setMode] = useState<SlotMode>(draft.mode ?? "single");
   const [promptRecipe, setPromptRecipe] = useState(draft.promptRecipe ?? "");
   const [referenceFiles, setReferenceFiles] = useState<File[]>([]);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [referenceIds, setReferenceIds] = useState<string[]>([]);
   const [previewId, setPreviewId] = useState<string | null>(null);
-  const [referenceMode, setReferenceMode] = useState<AssetMode>(
-    draft.selectedReferences?.length ? "saved" : "new",
-  );
-  const [previewMode, setPreviewMode] = useState<AssetMode>(
-    draft.selectedPreview ? "saved" : "new",
-  );
-  const [savedReferences, setSavedReferences] = useState<SavedVideo[]>([]);
-  const [savedPreviews, setSavedPreviews] = useState<SavedVideo[]>([]);
-  const [selectedReferences, setSelectedReferences] = useState<string[]>(
-    draft.selectedReferences ?? [],
-  );
-  const [selectedPreview, setSelectedPreview] = useState(draft.selectedPreview ?? "");
   const [durations, setDurations] = useState<number[]>(draft.durations ?? [4, 8]);
   const [resolutions, setResolutions] = useState<string[]>(draft.resolutions ?? ["720p", "1080p"]);
   const [allowUserPrompt, setAllowUserPrompt] = useState(draft.allowUserPrompt ?? true);
@@ -74,29 +60,20 @@ export function AdminCatalogPage({
   const requestKey = useRef(draft.requestKey ?? crypto.randomUUID());
   const lastPayload = useRef(draft.lastPayload ?? "");
   useEffect(() => {
-    const remainingFiles =
-      (referenceMode === "new" && referenceFiles.length > referenceIds.length) ||
-      (previewMode === "new" && !!previewFile && !previewId);
+    const remainingFiles = referenceFiles.length > 0 || !!previewFile;
     try {
       sessionStorage.setItem(
         draftKey,
         JSON.stringify({
           title,
           description,
-          category,
+          tags,
           mode,
           promptRecipe,
           roles,
           durations,
           resolutions,
           allowUserPrompt,
-          selectedReferences:
-            referenceMode === "saved"
-              ? selectedReferences
-              : referenceFiles.length === referenceIds.length
-                ? referenceIds
-                : [],
-          selectedPreview: previewMode === "saved" ? selectedPreview : previewId || "",
           requestKey: requestKey.current,
           lastPayload: lastPayload.current,
           needsFiles: remainingFiles,
@@ -116,37 +93,19 @@ export function AdminCatalogPage({
     draftKey,
     title,
     description,
-    category,
+    tags,
     mode,
     promptRecipe,
     roles,
     durations,
     resolutions,
     allowUserPrompt,
-    selectedReferences,
-    selectedPreview,
-    referenceMode,
-    previewMode,
     referenceFiles,
     previewFile,
     referenceIds,
     previewId,
     busy,
   ]);
-
-  async function refreshUploads() {
-    const data = await api<{ references: SavedVideo[]; previews: SavedVideo[] }>(
-      "/admin/catalog-uploads",
-    );
-    setSavedReferences(data.references);
-    setSavedPreviews(data.previews);
-  }
-  useEffect(() => {
-    void refreshUploads().catch((e) => setError((e as Error).message));
-  }, []);
-
-  const videoLabel = (item: SavedVideo) =>
-    `${new Date(item.createdAt).toLocaleString("zh-CN")} · ${(item.bytes / 1024 / 1024).toFixed(1)} MB · ${item.id.slice(0, 8)}`;
 
   async function uploadVideo(file: File, url: string) {
     const body = new FormData();
@@ -156,11 +115,9 @@ export function AdminCatalogPage({
   async function publish(event: FormEvent) {
     event.preventDefault();
     if (
-      (referenceMode === "new" && (!referenceFiles.length || referenceFiles.length > 3)) ||
-      (referenceMode === "saved" &&
-        (!selectedReferences.length || selectedReferences.length > 3)) ||
-      (previewMode === "new" && !previewFile) ||
-      (previewMode === "saved" && !selectedPreview)
+      !referenceFiles.length ||
+      referenceFiles.length > 3 ||
+      !previewFile
     )
       return setError("请为动作参考选择 1–3 段视频，并选择一段 MP4 示例成片。");
     if (!durations.length || !resolutions.length) return setError("至少选择一种时长和分辨率。");
@@ -168,16 +125,14 @@ export function AdminCatalogPage({
     setError("");
     setSuccess("");
     try {
-      const ids = referenceMode === "saved" ? [...selectedReferences] : [...referenceIds];
-      if (referenceMode === "new") {
-        for (const file of referenceFiles.slice(ids.length)) {
-          const saved = await uploadVideo(file, "/template-videos");
-          ids.push(saved.id);
-          setReferenceIds([...ids]);
-        }
+      const ids = [...referenceIds];
+      for (const file of referenceFiles.slice(ids.length)) {
+        const saved = await uploadVideo(file, "/template-videos");
+        ids.push(saved.id);
+        setReferenceIds([...ids]);
       }
-      let coverId = previewMode === "saved" ? selectedPreview : previewId;
-      if (!coverId && previewMode === "new" && previewFile) {
+      let coverId = previewId;
+      if (!coverId && previewFile) {
         const saved = await uploadVideo(previewFile, "/admin/catalog-preview-uploads");
         coverId = saved.id;
         setPreviewId(coverId);
@@ -218,7 +173,7 @@ export function AdminCatalogPage({
       const payload = {
         title,
         description,
-        category,
+        tags,
         referenceVideoIds: ids,
         previewVideoId: coverId,
         inputSlots,
@@ -238,8 +193,6 @@ export function AdminCatalogPage({
             ...savedDraft,
             requestKey: requestKey.current,
             lastPayload: lastPayload.current,
-            selectedReferences: ids,
-            selectedPreview: coverId,
             needsFiles: false,
           }),
         );
@@ -253,7 +206,7 @@ export function AdminCatalogPage({
       setSuccess(`“${created.template.title}”已发布到 Explore。`);
       setTitle("");
       setDescription("");
-      setCategory("动作");
+      setTags([]);
       setMode("single");
       setRoles(["主体人物", ""]);
       setPromptRecipe("");
@@ -262,12 +215,7 @@ export function AdminCatalogPage({
       setReferenceIds([]);
       setPreviewId(null);
       setFileKey((value) => value + 1);
-      setSelectedReferences([]);
-      setSelectedPreview("");
       lastPayload.current = "";
-      const reloaded = await Promise.allSettled([refreshUploads()]);
-      if (reloaded.some((result) => result.status === "rejected"))
-        setError("模板已发布，但列表刷新失败；刷新页面即可查看已发布模板。");
       setShowCreate(false);
       setRevision((value) => value + 1);
       onPublished();
@@ -304,7 +252,6 @@ export function AdminCatalogPage({
           onCreate={() => {
             setShowCreate(true);
             setSuccess("");
-            void refreshUploads().catch((e) => setError((e as Error).message));
           }}
           onChanged={() => {
             setSuccess("");
@@ -348,15 +295,7 @@ export function AdminCatalogPage({
                 onChange={(e) => setDescription(e.target.value)}
               />
             </label>
-            <label>
-              分类
-              <input
-                required
-                maxLength={30}
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-              />
-            </label>
+            <TagInput tags={tags} onChange={setTags} />
             <label>
               图片槽位
               <select value={mode} onChange={(e) => setMode(e.target.value as SlotMode)}>
@@ -382,110 +321,36 @@ export function AdminCatalogPage({
             ))}
             <div className="catalog-asset-group">
               <strong>动作参考视频（1–3 段）</strong>
-              {savedReferences.length > 0 && (
-                <div className="catalog-asset-modes">
-                  <button
-                    type="button"
-                    className={referenceMode === "new" ? "selected" : ""}
-                    onClick={() => setReferenceMode("new")}
-                  >
-                    上传新视频
-                  </button>
-                  <button
-                    type="button"
-                    className={referenceMode === "saved" ? "selected" : ""}
-                    onClick={() => setReferenceMode("saved")}
-                  >
-                    选择已上传视频
-                  </button>
-                </div>
-              )}
-              {referenceMode === "new" ? (
-                <label>
-                  MP4 / MOV，每段最多 50 MB
-                  <input
-                    key={`ref-${fileKey}`}
-                    required
-                    type="file"
-                    accept="video/mp4,video/quicktime"
-                    multiple
-                    onChange={(e) => {
-                      setReferenceFiles(Array.from(e.target.files || []));
-                      setReferenceIds([]);
-                    }}
-                  />
-                </label>
-              ) : (
-                <div className="catalog-saved-list">
-                  {savedReferences.map((item) => (
-                    <label key={item.id}>
-                      <input
-                        type="checkbox"
-                        checked={selectedReferences.includes(item.id)}
-                        onChange={(e) =>
-                          setSelectedReferences((old) =>
-                            e.target.checked
-                              ? [...old, item.id]
-                              : old.filter((id) => id !== item.id),
-                          )
-                        }
-                      />
-                      {videoLabel(item)}
-                    </label>
-                  ))}
-                </div>
-              )}
+              <label>
+                MP4 / MOV，每段最多 50 MB
+                <input
+                  key={`ref-${fileKey}`}
+                  required
+                  type="file"
+                  accept="video/mp4,video/quicktime"
+                  multiple
+                  onChange={(e) => {
+                    setReferenceFiles(Array.from(e.target.files || []));
+                    setReferenceIds([]);
+                  }}
+                />
+              </label>
             </div>
             <div className="catalog-asset-group">
               <strong>广场示例成片</strong>
-              {savedPreviews.length > 0 && (
-                <div className="catalog-asset-modes">
-                  <button
-                    type="button"
-                    className={previewMode === "new" ? "selected" : ""}
-                    onClick={() => setPreviewMode("new")}
-                  >
-                    上传新视频
-                  </button>
-                  <button
-                    type="button"
-                    className={previewMode === "saved" ? "selected" : ""}
-                    onClick={() => setPreviewMode("saved")}
-                  >
-                    选择已上传视频
-                  </button>
-                </div>
-              )}
-              {previewMode === "new" ? (
-                <label>
-                  MP4，最多 50 MB
-                  <input
-                    key={`preview-${fileKey}`}
-                    required
-                    type="file"
-                    accept="video/mp4"
-                    onChange={(e) => {
-                      setPreviewFile(e.target.files?.[0] || null);
-                      setPreviewId(null);
-                    }}
-                  />
-                </label>
-              ) : (
-                <div className="catalog-saved-list">
-                  {savedPreviews.map((item) => (
-                    <label key={item.id}>
-                      <input
-                        type="radio"
-                        name="saved-preview"
-                        value={item.id}
-                        checked={selectedPreview === item.id}
-                        onChange={() => setSelectedPreview(item.id)}
-                      />
-                      {videoLabel(item)}
-                    </label>
-                  ))}
-                </div>
-              )}
+              <label>
+                MP4，最多 50 MB
+                <input
+                  key={`preview-${fileKey}`}
+                  required
+                  type="file"
+                  accept="video/mp4"
+                  onChange={(e) => {
+                    setPreviewFile(e.target.files?.[0] || null);
+                    setPreviewId(null);
+                  }}
+                />
+              </label>
             </div>
             <label>
               模板动作描述（可选）

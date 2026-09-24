@@ -59,7 +59,7 @@ export function createAssetService(db, dataDir) {
           mime,
           bytes.length,
           sha,
-          Number(kind === "reference" || kind === "preview"),
+          0,
           Date.now(),
           Date.now() + UPLOAD_TTL,
         );
@@ -94,20 +94,6 @@ export function createAssetService(db, dataDir) {
   function upload(input) {
     const asset = stage(input);
     return ready(asset.id);
-  }
-  function removeOwned(id, userId) {
-    return transact(db, () => {
-      const asset = get(id);
-      if (!asset || asset.owner_id !== userId || asset.kind === "output")
-        throw fail(404, "素材不存在。");
-      if (["deleting", "deleted"].includes(asset.state)) return { deleted: true };
-      if (retained(id)) throw fail(409, "素材仍被当前模板或未结束任务使用，请先解除引用。");
-      db.prepare("UPDATE assets SET library=0,state='deleting',deleted_at=? WHERE id=?").run(
-        Date.now(),
-        id,
-      );
-      return { deleted: true };
-    });
   }
   function cleanup({ now = Date.now(), limit = 20, removeFile = unlinkSync } = {}) {
     const ids = transact(db, () => {
@@ -151,18 +137,10 @@ export function createAssetService(db, dataDir) {
     stage,
     ready,
     upload,
-    removeOwned,
     cleanup,
     read(id) {
       const asset = requireReady(id);
       return readFileSync(path.join(directory, asset.filename));
-    },
-    list(userId, kind) {
-      return db
-        .prepare(
-          "SELECT id,kind,bytes,created_at AS createdAt FROM assets WHERE owner_id=? AND kind=? AND state='ready' AND library=1 ORDER BY created_at DESC LIMIT 100",
-        )
-        .all(userId, kind);
     },
   };
 }

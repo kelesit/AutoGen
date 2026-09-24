@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { api, post } from "./api";
+import { ApiError, api, post } from "./api";
 import { submitJob } from "./recovery";
 import { scenarioLabels } from "./demoScenarios";
 import type { Job, Template, User } from "./types";
@@ -21,27 +21,45 @@ export function CreateModal({
   const [prompt, setPrompt] = useState("");
   const [resolution, setResolution] = useState(template.outputOptions.default.resolution);
   const [duration, setDuration] = useState(template.outputOptions.default.duration);
-  const [quote, setQuote] = useState<{ cost: number; version: string } | null>(null);
+  const [quote, setQuote] = useState<{
+    key: string;
+    cost: number;
+    version: string;
+  } | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(true);
+  const [quoteRevision, setQuoteRevision] = useState(0);
+  const [reconfirmKey, setReconfirmKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const previewUrls = useRef<string[]>([]);
+  const quoteKey = `${template.id}:${resolution}:${duration}`;
+  const currentQuote = quote?.key === quoteKey ? quote : null;
   useEffect(() => {
     let alive = true;
     setQuote(null);
+    setQuoteLoading(true);
+    setError("");
     api<{ cost: number; version: string }>(
       "/quote",
       post({ templateId: template.id, resolution, duration }),
     )
       .then((value) => {
-        if (alive) setQuote(value);
+        if (alive) {
+          setQuote({ ...value, key: quoteKey });
+          if (reconfirmKey === quoteKey)
+            setError(`本次报价为 ${value.cost} 积分，请再次点击确认。`);
+        }
       })
       .catch((e) => {
         if (alive) setError(e.message);
+      })
+      .finally(() => {
+        if (alive) setQuoteLoading(false);
       });
     return () => {
       alive = false;
     };
-  }, [template.id, resolution, duration]);
+  }, [quoteKey, quoteRevision, reconfirmKey, template.id, resolution, duration]);
   useEffect(() => () => previewUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
   async function upload(key: string, file?: File) {
     if (!file) return;
@@ -70,7 +88,7 @@ export function CreateModal({
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy || !quote || template.inputSlots.some((slot) => !uploads[slot.key])) return;
+    if (busy || !currentQuote || template.inputSlots.some((slot) => !uploads[slot.key])) return;
     const uploadIds = Object.fromEntries(
       Object.entries(uploads).map(([key, value]) => [key, value.id]),
     );
@@ -87,14 +105,21 @@ export function CreateModal({
           resolution,
           duration,
           scenario,
-          expectedCost: quote.cost,
-          priceVersion: quote.version,
+          expectedCost: currentQuote.cost,
+          priceVersion: currentQuote.version,
         },
         discardResponse,
       );
       onCreated(result.job, result.user);
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof ApiError && e.status === 409 && e.message === "报价已变化，请重新确认。") {
+        setQuote(null);
+        setQuoteLoading(true);
+        setReconfirmKey(quoteKey);
+        setQuoteRevision((value) => value + 1);
+      } else {
+        setError((e as Error).message);
+      }
     } finally {
       setBusy(false);
     }
@@ -119,6 +144,11 @@ export function CreateModal({
           ×
         </button>
         <h2>{template.title}</h2>
+        {template.tags.length > 0 && (
+          <div className="template-tags" aria-label="模板标签">
+            {template.tags.map((tag) => <span className="template-tag" key={tag}>{tag}</span>)}
+          </div>
+        )}
         <p className="muted">
           上传与动作模板对应的人物图片。任务会固定模板版本、动作视频和图片槽位。
         </p>
@@ -156,7 +186,17 @@ export function CreateModal({
           <div className="form-columns">
             <label>
               分辨率
-              <select value={resolution} onChange={(e) => setResolution(e.target.value)}>
+              <select
+                value={resolution}
+                disabled={busy}
+                onChange={(e) => {
+                  setQuote(null);
+                  setQuoteLoading(true);
+                  setReconfirmKey(null);
+                  setError("");
+                  setResolution(e.target.value);
+                }}
+              >
                 {template.outputOptions.allowedResolutions.map((value) => (
                   <option key={value} value={value}>
                     {value}
@@ -166,7 +206,17 @@ export function CreateModal({
             </label>
             <label>
               时长
-              <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+              <select
+                value={duration}
+                disabled={busy}
+                onChange={(e) => {
+                  setQuote(null);
+                  setQuoteLoading(true);
+                  setReconfirmKey(null);
+                  setError("");
+                  setDuration(Number(e.target.value));
+                }}
+              >
                 {template.outputOptions.allowedDurations.map((value) => (
                   <option key={value} value={value}>
                     {value} 秒
@@ -211,11 +261,20 @@ export function CreateModal({
               {error}
             </div>
           )}
+          {!quoteLoading && !currentQuote && !busy && (
+            <button
+              type="button"
+              className="button secondary full"
+              onClick={() => setQuoteRevision((value) => value + 1)}
+            >
+              重新获取报价
+            </button>
+          )}
           <button
             className="button primary full"
-            disabled={busy || !quote || template.inputSlots.some((slot) => !uploads[slot.key])}
+            disabled={busy || !currentQuote || template.inputSlots.some((slot) => !uploads[slot.key])}
           >
-            {busy ? "处理中…" : `开始生成 · ${quote?.cost ?? "…"} 积分`}
+            {busy ? "处理中…" : `开始生成 · ${currentQuote?.cost ?? "…"} 积分`}
           </button>
         </form>
       </div>

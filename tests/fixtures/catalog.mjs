@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createAssetService } from "../../server/asset-service.mjs";
 import { createCatalogService } from "../../server/catalog-service.mjs";
+import { calculateQuote } from "../../server/generation-service.mjs";
 export function setupCatalog(db, dataDir, ownerId) {
   const assets = createAssetService(db, dataDir);
   const catalog = createCatalogService(db, assets);
@@ -22,6 +23,7 @@ export function setupCatalog(db, dataDir, ownerId) {
     inputSlots: [{ key: "person", kind: "person", label: "人物", required: true }],
     promptRecipe: "wave",
   }).template;
+  const quote = calculateQuote(template, "720p", 4);
   return {
     assets,
     catalog,
@@ -35,6 +37,8 @@ export function setupCatalog(db, dataDir, ownerId) {
       uploadIds: { person: image.id },
       resolution: "720p",
       duration: 4,
+      expectedCost: quote.cost,
+      priceVersion: quote.version,
       prompt: "test",
     },
   };

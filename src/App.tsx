@@ -1,4 +1,3 @@
-import { AssetLibrary } from "./AssetLibrary";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   ArrowDownLeft,
@@ -6,7 +5,6 @@ import {
   ArrowUpRight,
   Check,
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
   CircleHelp,
   Clock3,
@@ -23,8 +21,8 @@ import {
   Plus,
   Search,
   ShieldCheck,
-  SlidersHorizontal,
   Sparkles,
+  Trash2,
   Users,
   Wallet,
   X,
@@ -40,10 +38,10 @@ import type { AdminData, Job, JobDetail, Ledger, Page, Template, User } from "./
 const pageNames: Record<Page, string> = {
   explore: "探索灵感",
   collection: "我的作品",
-  favorites: "我的收藏",
   credits: "积分记录",
   admin: "管理后台",
 };
+type ExploreView = "全部" | "收藏" | "最新" | "趋势";
 const statuses: Record<Job["status"], string> = {
   queued: "排队中",
   running: "生成中",
@@ -55,7 +53,9 @@ const statuses: Record<Job["status"], string> = {
   failed: "生成失败",
   cancelled: "已取消",
 };
-const isActive = (job: Job) => !["completed", "failed", "cancelled"].includes(job.status);
+const isProcessing = (job: Job) =>
+  ["queued", "submitting", "submission_unknown", "running", "persisting"].includes(job.status);
+const isUnresolved = (job: Job) => isProcessing(job) || job.status === "needs_review";
 const billingLabels = {
   held: "积分冻结中",
   settled: "已结算",
@@ -119,11 +119,13 @@ function Modal({
   onClose,
   title,
   wide = false,
+  className = "",
 }: {
   children: ReactNode;
   onClose: () => void;
   title: string;
   wide?: boolean;
+  className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -184,7 +186,7 @@ function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`modal ${wide ? "modal-wide" : ""}`}
+        className={`modal ${wide ? "modal-wide" : ""} ${className}`}
       >
         <button aria-label="关闭弹窗" className="icon-button modal-close" onClick={onClose}>
           <X size={20} />
@@ -344,12 +346,6 @@ function TemplateCard({
           <img src={imageUrl(template.image)} alt={template.subtitle} loading="lazy" />
         )}
         <div className="card-shade" />
-        {template.tag && (
-          <span className={`badge ${template.tag === "NEW" ? "badge-new" : ""}`}>
-            {template.tag === "热门" && <Zap size={10} />}
-            {template.tag}
-          </span>
-        )}
         <span className="duration-badge">
           <Film size={12} />
           {template.outputOptions.allowedDurations.join("/")}s
@@ -395,6 +391,7 @@ export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [creationCount, setCreationCount] = useState(0);
   const [activeCount, setActiveCount] = useState(0);
+  const [reviewCount, setReviewCount] = useState(0);
   const [deletingCreation, setDeletingCreation] = useState<Job | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -406,8 +403,9 @@ export default function App() {
   const [loadError, setLoadError] = useState("");
   const [privateLoading, setPrivateLoading] = useState(false);
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("全部");
-  const [sort, setSort] = useState("推荐");
+  const [exploreView, setExploreView] = useState<ExploreView>(
+    location.hash === "#favorites" ? "收藏" : "全部",
+  );
   const [jobFilter, setJobFilter] = useState("全部");
   const [authOpen, setAuthOpen] = useState(false);
   const [adminLogin, setAdminLogin] = useState(false);
@@ -425,12 +423,20 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [toast]);
   const go = useCallback((target: Page) => {
+    if (target === "explore") setExploreView("全部");
     location.hash = target;
     setPage(target);
     setMobileNav(false);
   }, []);
   useEffect(() => {
-    const update = () => setPage(currentPage());
+    const update = () => {
+      if (location.hash === "#favorites") {
+        setExploreView("收藏");
+        history.replaceState(null, "", "#explore");
+      }
+      setPage(currentPage());
+    };
+    update();
     window.addEventListener("hashchange", update);
     return () => window.removeEventListener("hashchange", update);
   }, []);
@@ -457,6 +463,8 @@ export default function App() {
     if (!user) {
       setJobs([]);
       setCreationCount(0);
+      setActiveCount(0);
+      setReviewCount(0);
       removedJobs.current.clear();
       setLedger([]);
       setAdminData(null);
@@ -470,7 +478,7 @@ export default function App() {
       fetching = true;
       try {
         const [j, me, l, a] = await Promise.all([
-          api<{ jobs: Job[]; totalCreations: number; activeTasks: number }>("/collection"),
+          api<{ jobs: Job[]; totalCreations: number; activeTasks: number; reviewTasks: number }>("/collection"),
           api<{ user: User | null }>("/me"),
           page === "credits" ? api<{ ledger: Ledger[] }>("/ledger") : Promise.resolve(null),
           page === "admin" && user?.role === "admin"
@@ -488,6 +496,7 @@ export default function App() {
           ),
         );
         setActiveCount(j.activeTasks);
+        setReviewCount(j.reviewTasks);
         setUser(me.user);
         if (l) setLedger(l.ledger);
         if (a) setAdminData(a);
@@ -604,31 +613,31 @@ export default function App() {
       setDeleteBusy(false);
     }
   }
-  const activeJobs = jobs.filter((job) => isActive(job)).length;
+  const activeJobs = jobs.filter(isUnresolved).length;
   const visibleTemplates = templates
     .filter(
       (t) =>
-        (category === "全部" || t.category === category) &&
-        (page !== "favorites" || t.favorite) &&
-        `${t.title} ${t.subtitle} ${t.creator}`.toLowerCase().includes(query.toLowerCase()),
+        (exploreView !== "收藏" || t.favorite) &&
+        `${t.title} ${t.subtitle} ${t.creator} ${t.tags.join(" ")}`.toLowerCase().includes(query.trim().toLowerCase()),
     )
     .sort((a, b) =>
-      sort === "热门"
-        ? b.uses - a.uses
-        : sort === "最新"
-          ? Number(b.tag === "NEW") - Number(a.tag === "NEW")
+      exploreView === "趋势"
+        ? b.uses - a.uses || (b.publishedAt ?? b.createdAt) - (a.publishedAt ?? a.createdAt)
+        : exploreView === "最新"
+          ? (b.publishedAt ?? b.createdAt) - (a.publishedAt ?? a.createdAt)
           : 0,
     );
   const visibleJobs = jobs.filter(
     (job) =>
       jobFilter === "全部" ||
       (jobFilter === "进行中"
-        ? isActive(job)
+        ? isProcessing(job)
         : jobFilter === "已完成"
           ? job.status === "completed"
+          : jobFilter === "待核查"
+            ? job.status === "needs_review"
           : ["failed", "cancelled"].includes(job.status)),
   );
-  const categories = ["全部", ...new Set(templates.map((item) => item.category))];
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -679,14 +688,12 @@ export default function App() {
             [
               ["explore", Compass],
               ["collection", LayoutGrid],
-              ["favorites", Heart],
             ] as const
           ).map(([key, Icon]) => (
             <button
               key={key}
               className={`nav-item ${page === key ? "active" : ""}`}
               onClick={() => {
-                setCategory("全部");
                 setQuery("");
                 go(key);
               }}
@@ -717,26 +724,6 @@ export default function App() {
           <span>管理后台</span>
         </button>
         <div className="sidebar-bottom">
-          <div className="studio-note">
-            <div className="studio-note-icon">
-              <Sparkles size={18} />
-            </div>
-            <strong>
-              每个好故事，
-              <br />
-              都从一帧开始。
-            </strong>
-            <p>选一个模板，试试你的灵感。</p>
-            <button onClick={() => templates[0] && create(templates[0])}>
-              创建第一部作品
-              <ArrowUpRight size={15} />
-            </button>
-          </div>
-          <button className="help-link" onClick={() => setAboutOpen(true)}>
-            <CircleHelp size={16} />
-            关于这个演示
-            <ArrowUpRight size={13} />
-          </button>
           {user && (
             <div className="sidebar-user">
               <span className="avatar small">{user.name[0].toUpperCase()}</span>
@@ -770,36 +757,23 @@ export default function App() {
             STUDIO <ChevronRight size={12} />
             <span>{pageNames[page]}</span>
           </div>
-          <button className="demo-mode" onClick={() => setAboutOpen(true)}>
-            <span />
-            演示工作室
-            <ChevronDown size={13} />
-          </button>
         </div>
-        {(page === "explore" || page === "favorites") && (
+        {page === "explore" && (
           <>
             <div className="page-heading">
               <div>
-                <div className="eyebrow">
-                  {page === "favorites"
-                    ? "YOUR INSPIRATION BOARD"
-                    : "A LITTLE INSPIRATION. ENDLESS POSSIBILITIES."}
-                </div>
+                <div className="eyebrow">A LITTLE INSPIRATION. ENDLESS POSSIBILITIES.</div>
                 <h1>
-                  {page === "favorites" ? "值得留下的灵感" : "下一部好作品，从这里开始"}
+                  下一部好作品，从这里开始
                   <span className="title-dot">.</span>
                 </h1>
-                <p>
-                  {page === "favorites"
-                    ? "收藏喜欢的模板，随时回来，让灵感发生。"
-                    : "选择动作模板，上传图片，生成属于你的作品。"}
-                </p>
+                <p>选择动作模板，上传图片，生成属于你的作品。</p>
               </div>
               <div className="search-field">
                 <Search size={17} />
                 <input
                   aria-label="搜索模板"
-                  placeholder="搜索模板、风格或创作者"
+                  placeholder="搜索模板、标签或创作者"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
@@ -815,91 +789,27 @@ export default function App() {
                 <span className="search-shortcut">⌕</span>
               </div>
             </div>
-            {page === "explore" && !query && category === "全部" && templates[0] && (
-              <section className="feature-banner">
-                {templates[0].preview_url ? (
-                  <video src={templates[0].preview_url} autoPlay muted loop playsInline />
-                ) : (
-                  <img src={imageUrl(templates[0].image)} alt={templates[0].title} />
-                )}
-                <div className="feature-shade" />
-                <div className="feature-content">
-                  <span className="feature-kicker">
-                    <span />
-                    THIS WEEK’S CREATIVE PICK
-                  </span>
-                  <h2>
-                    把灵感，
-                    <br />
-                    变成下一帧。
-                  </h2>
-                  <p>让静止的瞬间，拥有自己的故事。</p>
-                  <button
-                    className="button light"
-                    onClick={() => templates[0] && create(templates[0])}
-                  >
-                    使用精选模板
-                    <ArrowUpRight size={16} />
-                  </button>
-                </div>
-                <div className="feature-credit">
-                  <span className="feature-number">
-                    01 <i>/ {templates.length}</i>
-                  </span>
-                  <span className="feature-line" />
-                  <strong>{templates[0].title}</strong>
-                  <span>
-                    {templates[0].subtitle} · {templates[0].creator}
-                  </span>
-                  <div className="feature-dots">
-                    <i />
-                    <i />
-                    <i />
-                  </div>
-                </div>
-                <div className="feature-corner">CURATED BY PLAYBOX</div>
-              </section>
-            )}
             <div className="explore-toolbar">
-              <div className="category-tabs">
-                {categories.map((value) => (
+              <div className="category-tabs" aria-label="模板浏览方式">
+                {(["全部", "收藏", "最新", "趋势"] as const).map((value) => (
                   <button
                     key={value}
-                    onClick={() => setCategory(value)}
-                    className={category === value ? "selected" : ""}
+                    onClick={() => setExploreView(value)}
+                    className={exploreView === value ? "selected" : ""}
+                    aria-pressed={exploreView === value}
                   >
-                    {value === "全部" && <LayoutGrid size={14} />}
                     {value}
-                    {value === "全部" && (
-                      <span>
-                        {page === "favorites"
-                          ? templates.filter((t) => t.favorite).length
-                          : templates.length}
-                      </span>
-                    )}
                   </button>
                 ))}
-              </div>
-              <div className="sort-field">
-                <SlidersHorizontal size={14} />
-                <select
-                  aria-label="模板排序"
-                  value={sort}
-                  onChange={(e) => setSort(e.target.value)}
-                >
-                  <option>推荐</option>
-                  <option>热门</option>
-                  <option>最新</option>
-                </select>
               </div>
             </div>
             <div className="grid-caption">
               <span>
-                {page === "favorites"
+                {exploreView === "收藏"
                   ? "收藏的模板"
-                  : category === "全部"
+                  : exploreView === "全部"
                     ? "为你的下一次创作精选"
-                    : `${category}风格精选`}
+                    : `${exploreView}模板`}
               </span>
               <span>
                 {visibleTemplates.length} 个模板<em>持续更新</em>
@@ -920,17 +830,16 @@ export default function App() {
               />
             ) : !visibleTemplates.length ? (
               <Empty
-                title={page === "favorites" ? "把喜欢的灵感收藏在这里" : "没有找到这个灵感"}
+                title={exploreView === "收藏" ? "把喜欢的灵感收藏在这里" : "没有找到这个灵感"}
                 text={
-                  page === "favorites"
+                  exploreView === "收藏"
                     ? "点击模板右上角的爱心，即可收藏。"
                     : "试试其他关键词，或者看看全部模板。"
                 }
                 action="浏览全部模板"
                 onAction={() => {
                   setQuery("");
-                  setCategory("全部");
-                  go("explore");
+                  setExploreView("全部");
                 }}
                 icon={<Heart size={28} />}
               />
@@ -979,7 +888,7 @@ export default function App() {
               <>
                 <div className="collection-toolbar">
                   <div className="category-tabs">
-                    {["全部", "进行中", "已完成", "其他"].map((item) => (
+                    {["全部", "进行中", "待核查", "已完成", "其他"].map((item) => (
                       <button
                         key={item}
                         className={jobFilter === item ? "selected" : ""}
@@ -991,7 +900,8 @@ export default function App() {
                     ))}
                   </div>
                   <span className="muted small-text">
-                    {creationCount} 件作品 · {activeCount} 个任务处理中
+                    {creationCount} 件作品 · {Math.max(0, activeCount - reviewCount)} 个任务处理中
+                    {reviewCount > 0 && ` · ${reviewCount} 个待核查`}
                   </span>
                 </div>
                 {privateLoading ? (
@@ -1023,7 +933,7 @@ export default function App() {
                               <Play size={23} fill="currentColor" />
                             </button>
                           )}
-                          {isActive(job) && (
+                          {isProcessing(job) && (
                             <div className="job-progress">
                               <LoaderCircle className="spin" size={25} />
                               <strong>{statuses[job.status]}</strong>
@@ -1031,6 +941,13 @@ export default function App() {
                               <div>
                                 <i style={{ width: `${job.progress}%` }} />
                               </div>
+                            </div>
+                          )}
+                          {job.status === "needs_review" && (
+                            <div className="job-review">
+                              <CircleHelp size={27} />
+                              <strong>等待人工核查</strong>
+                              <span>生成已暂停，积分仍冻结</span>
                             </div>
                           )}
                           <span className="sample-label">
@@ -1081,7 +998,11 @@ export default function App() {
                               <button className="button secondary" onClick={() => void cancel(job)}>
                                 取消排队并释放积分
                               </button>
-                            ) : isActive(job) ? (
+                            ) : job.status === "needs_review" ? (
+                              <span className="job-review-note">
+                                等待管理员核查结果，当前不能取消或释放积分。
+                              </span>
+                            ) : isProcessing(job) ? (
                               <span className="muted small-text">
                                 {billingLabels[job.billing_state]} · 提交后不支持取消
                               </span>
@@ -1209,7 +1130,7 @@ export default function App() {
                   {[
                     { label: "注册用户", value: adminData.stats.users, icon: Users },
                     { label: "生成任务", value: adminData.stats.jobs, icon: Film },
-                    { label: "进行中", value: adminData.stats.active, icon: Clock3 },
+                    { label: "未结束任务", value: adminData.stats.active, icon: Clock3 },
                     { label: "已完成", value: adminData.stats.completed, icon: CheckCircle2 },
                     { label: "净消耗积分", value: adminData.stats.credits, icon: Coins },
                   ].map(({ label, value, icon: Icon }) => (
@@ -1223,7 +1144,7 @@ export default function App() {
                   ))}
                 </div>
                 <div className="admin-tabs category-tabs">
-                  {["任务列表", "模板目录", "素材库", "用户列表", "积分流水"].map((tab) => (
+                  {["任务列表", "模板目录", "用户列表", "积分流水"].map((tab) => (
                     <button
                       key={tab}
                       className={adminTab === tab ? "selected" : ""}
@@ -1281,7 +1202,6 @@ export default function App() {
                   </div>
                 )}
 
-                {adminTab === "素材库" && <AssetLibrary />}
                 {adminTab === "用户列表" && (
                   <div className="table-scroll">
                     <table>
@@ -1363,33 +1283,45 @@ export default function App() {
       {deletingCreation && (
         <Modal
           title="删除作品"
+          className="delete-modal"
           onClose={() => {
             if (!deleteBusy) setDeletingCreation(null);
           }}
         >
-          <p>
-            删除“{deletingCreation.template.title}
-            ”的这件作品？删除后无法播放、下载或恢复。生成任务和积分流水保留，费用不退还。
-          </p>
-          {deleteError && (
-            <p className="form-error" role="alert">
-              {deleteError}
+          <div className="delete-dialog">
+            <div className="delete-dialog-icon"><Trash2 size={23} strokeWidth={1.8} /></div>
+            <div className="delete-dialog-heading">
+              <span>删除作品</span>
+              <h2>确定删除这件作品？</h2>
+            </div>
+            <div className="delete-dialog-target">
+              <span className="delete-dialog-target-icon"><Film size={20} /></span>
+              <div>
+                <strong>{deletingCreation.template.title}</strong>
+                <span>已生成的作品</span>
+              </div>
+            </div>
+            <p className="delete-dialog-description">
+              删除后无法播放、下载或恢复。生成任务和积分流水会保留，费用不退还。
             </p>
-          )}
-          <button
-            className="button danger"
-            disabled={deleteBusy}
-            onClick={() => void deleteCreation()}
-          >
-            {deleteBusy ? "删除中…" : "确认删除作品"}
-          </button>
-          <button
-            className="button"
-            disabled={deleteBusy}
-            onClick={() => setDeletingCreation(null)}
-          >
-            取消
-          </button>
+            {deleteError && <p className="form-error" role="alert">{deleteError}</p>}
+            <div className="delete-dialog-actions">
+              <button
+                className="button secondary"
+                disabled={deleteBusy}
+                onClick={() => setDeletingCreation(null)}
+              >
+                保留作品
+              </button>
+              <button
+                className="button danger"
+                disabled={deleteBusy}
+                onClick={() => void deleteCreation()}
+              >
+                {deleteBusy ? "删除中…" : "删除作品"}
+              </button>
+            </div>
+          </div>
         </Modal>
       )}
       {playing && (
@@ -1588,18 +1520,14 @@ function TaskDetail({ id, admin, onClose }: { id: string; admin: boolean; onClos
       clearInterval(timer);
     };
   }, [id]);
-  async function action(name: string) {
+  async function recover() {
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      await api(`/admin/jobs/${id}/${name}`, post({}));
+      await api(`/admin/jobs/${id}/recover`, post({}));
       setData(await api<JobDetail>(`/jobs/${id}/detail`));
-      setNotice(
-        name === "replay"
-          ? "已注入 3 次重复成功和 1 次过期事件；可查看忽略记录和结算状态。"
-          : "已恢复原执行阶段。",
-      );
+      setNotice("已恢复原执行阶段。");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1722,26 +1650,15 @@ function TaskDetail({ id, admin, onClose }: { id: string; admin: boolean; onClos
                 </pre>
               </details>
             )}
-            {admin && (
+            {admin && data.job.status === "needs_review" && (
               <div className="detail-actions">
-                {data.job.status === "needs_review" && (
-                  <button
-                    disabled={busy}
-                    className="button secondary"
-                    onClick={() => void action("recover")}
-                  >
-                    恢复原执行阶段
-                  </button>
-                )}
-                {data.job.status === "completed" && data.supplier_cost && (
-                  <button
-                    disabled={busy}
-                    className="button secondary"
-                    onClick={() => void action("replay")}
-                  >
-                    演示重复 / 乱序事件
-                  </button>
-                )}
+                <button
+                  disabled={busy}
+                  className="button secondary"
+                  onClick={() => void recover()}
+                >
+                  恢复原执行阶段
+                </button>
                 <span className="muted small-text">后台操作记录到任务时间线</span>
               </div>
             )}

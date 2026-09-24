@@ -12,9 +12,9 @@ import { openDatabase } from "../server/database.mjs";
 import { createEngine } from "../server/engine.mjs";
 import { createProvider } from "../server/provider.mjs";
 
-async function fixture(t) {
+async function fixture(t, { jobDuration = 0 } = {}) {
   const dataDir = await mkdtemp(join(tmpdir(), "playbox-reliability-"));
-  const instance = await createApp({ dataDir, seed: false, jobDuration: 0 });
+  const instance = await createApp({ dataDir, seed: false, jobDuration });
   const { db, engine } = instance;
   const server = instance.app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
@@ -126,6 +126,57 @@ test("缺少查单能力：停止自动执行、保留冻结、不盲目重做",
   assert.equal((await f.request(`/jobs/${job.id}/cancel`, {})).status, 409);
   f.db.prepare("UPDATE users SET role='admin' WHERE id=?").run(f.user.id);
   assert.equal((await f.request(`/admin/jobs/${job.id}/recover`, {})).status, 409);
+});
+
+test("生成等待超限转人工核查，后台统计与冻结状态保持一致", async (t) => {
+  const f = await fixture(t, { jobDuration: 200000 });
+  const job = await f.create();
+  await f.step();
+  assert.equal(f.get(job.id).status, "running");
+  f.db.prepare("UPDATE jobs SET accepted_at=? WHERE id=?").run(Date.now() - 181000, job.id);
+  await f.step();
+  assert.equal(f.get(job.id).status, "needs_review");
+  assert.equal(f.get(job.id).review_phase, "poll");
+  assert.equal(f.invariant().reserved, 12);
+  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM ledger WHERE job_id=?").get(job.id).n, 1);
+  const collection = await f.request("/collection");
+  assert.equal(collection.data.activeTasks, 1);
+  assert.equal(collection.data.reviewTasks, 1);
+  f.db.prepare("UPDATE users SET role='admin' WHERE id=?").run(f.user.id);
+  const admin = await f.request("/admin");
+  assert.equal(admin.status, 200);
+  assert.equal(admin.data.runtime.max_concurrency, 2);
+  assert.equal(admin.data.runtime.worker_online, true);
+  assert.equal(admin.data.runtime.needs_review, 1);
+  assert.equal(admin.data.stats.active, 1);
+  assert.equal(admin.data.jobs.find((item) => item.id === job.id).status, "needs_review");
+});
+
+test("排队超过生成等待上限后才接单，不会立即转人工核查", async (t) => {
+  const f = await fixture(t, { jobDuration: 200000 });
+  const job = await f.create();
+  f.db.prepare("UPDATE jobs SET created_at=? WHERE id=?").run(Date.now() - 181000, job.id);
+  await f.step();
+  const accepted = f.get(job.id);
+  assert.equal(accepted.status, "running");
+  assert.ok(accepted.accepted_at > accepted.created_at + 180000);
+  await f.step();
+  assert.equal(f.get(job.id).status, "running");
+  assert.equal(f.engine.detail(job.id).work !== null, true);
+  f.invariant();
+});
+
+test("旧数据库升级后按已有接单记录回填生成等待起点", async (t) => {
+  const f = await fixture(t, { jobDuration: 200000 });
+  const job = await f.create();
+  await f.step();
+  const event = f.db.prepare("SELECT created_at FROM job_events WHERE job_id=? AND kind='accepted'").get(job.id);
+  f.db.exec("ALTER TABLE jobs DROP COLUMN accepted_at");
+  f.db.exec("PRAGMA user_version=101");
+  const migrated = openDatabase(f.dataDir);
+  t.after(() => migrated.close());
+  assert.equal(migrated.prepare("PRAGMA user_version").get().user_version, 102);
+  assert.equal(migrated.prepare("SELECT accepted_at FROM jobs WHERE id=?").get(job.id).accepted_at, event.created_at);
 });
 
 test("真实子进程在外部接单后退出：租约到期查单恢复，不重复调用生成", async (t) => {
@@ -288,6 +339,136 @@ test("保存重试耗尽转人工核查；管理员恢复原保存阶段，无�
   f.invariant();
 });
 
+test("输入缺失、多余槽位和无效描述拒绝受理，不创建任务或冻结积分", async (t) => {
+  const f = await fixture(t);
+  const invalidBodies = [
+    { ...f.jobBody, uploadIds: {} },
+    { ...f.jobBody, uploadIds: { ...f.jobBody.uploadIds, extra: f.image.id } },
+    { ...f.jobBody, prompt: "x".repeat(501) },
+  ];
+  for (const body of invalidBodies) {
+    assert.equal((await f.request("/jobs", body, randomUUID())).status, 400);
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
+    assert.equal(f.invariant().credits, 300);
+    assert.equal(f.invariant().reserved, 0);
+  }
+  const updated = f.catalog.updateCurated(f.user.id, f.template.id, {
+    expectedUpdatedAt: f.template.updatedAt,
+    outputOptions: { ...f.template.outputOptions, allowUserPrompt: false },
+  });
+  const disabledPrompt = { ...f.jobBody, templateVersionId: updated.versionId, prompt: "test" };
+  assert.equal((await f.request("/jobs", disabledPrompt, randomUUID())).status, 400);
+  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
+  assert.equal(f.invariant().reserved, 0);
+});
+
+test("待核查任务也占未结束名额，超限拒绝不冻结，取消后可重新提交", async (t) => {
+  const f = await fixture(t);
+  const unknown = await f.create("unknown_no_lookup");
+  assert.equal((await f.drain(unknown.id)).status, "needs_review");
+  const firstQueued = await f.create();
+  await f.create();
+  assert.equal(f.invariant().credits, 264);
+  assert.equal(f.invariant().reserved, 36);
+  const key = randomUUID();
+  const before = f.db.prepare("SELECT COUNT(*) AS n FROM ledger").get().n;
+  const rejected = await f.request("/jobs", f.jobBody, key);
+  assert.equal(rejected.status, 429);
+  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 3);
+  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM ledger").get().n, before);
+  assert.equal(f.invariant().reserved, 36);
+  assert.equal((await f.request(`/jobs/${firstQueued.id}/cancel`, {})).status, 200);
+  assert.equal(f.invariant().reserved, 24);
+  const accepted = await f.request("/jobs", f.jobBody, key);
+  assert.equal(accepted.status, 201);
+  assert.equal(f.invariant().reserved, 36);
+});
+
+test("取消与执行同时发生时，只能释放或交付一次", async (t) => {
+  const f = await fixture(t);
+  const job = await f.create();
+  const [, cancellation] = await Promise.all([
+    f.step(),
+    f.request(`/jobs/${job.id}/cancel`, {}),
+  ]);
+  assert.ok([200, 409].includes(cancellation.status));
+  const final = await f.drain(job.id);
+  const ledger = f.db.prepare("SELECT kind FROM ledger WHERE job_id=?").all(job.id);
+  if (cancellation.status === 200) {
+    assert.equal(final.status, "cancelled");
+    assert.deepEqual(ledger.map((row) => row.kind).sort(), ["hold", "release"]);
+    assert.equal(f.invariant().credits, 300);
+  } else {
+    assert.equal(final.status, "completed");
+    assert.deepEqual(ledger.map((row) => row.kind).sort(), ["hold", "settle"]);
+    assert.equal(f.invariant().credits, 288);
+  }
+  assert.equal(f.invariant().reserved, 0);
+  assert.equal(f.engine.detail(job.id).attempts.filter((row) => row.phase === "submit").length,
+    cancellation.status === 200 ? 0 : 1);
+});
+
+test("新任务必须确认有效的当前报价，拒绝时不创建任务、占用素材或冻结积分", async (t) => {
+  const f = await fixture(t);
+  const quote = await f.request("/quote", {
+    templateId: f.template.id,
+    resolution: "720p",
+    duration: 4,
+  });
+  assert.equal(quote.status, 200);
+  assert.equal(quote.data.cost, 12);
+  assert.equal(quote.data.version, "demo-v1");
+  const body = {
+    ...f.jobBody,
+    expectedCost: quote.data.cost,
+    priceVersion: quote.data.version,
+  };
+  const key = randomUUID();
+  const ledgerBefore = f.db.prepare("SELECT * FROM ledger ORDER BY id").all();
+  const rejected = [
+    ["缺少全部确认信息", { expectedCost: undefined, priceVersion: undefined }, 400],
+    ["缺少金额", { expectedCost: undefined }, 400],
+    ["缺少价格版本", { priceVersion: undefined }, 400],
+    ["空金额", { expectedCost: null }, 400],
+    ["字符串金额", { expectedCost: "12" }, 400],
+    ["布尔金额", { expectedCost: true }, 400],
+    ["数组金额", { expectedCost: [12] }, 400],
+    ["负数金额", { expectedCost: -12 }, 400],
+    ["非整数金额", { expectedCost: 12.5 }, 400],
+    ["空价格版本", { priceVersion: null }, 400],
+    ["数字价格版本", { priceVersion: 1 }, 400],
+    ["数组价格版本", { priceVersion: [quote.data.version] }, 400],
+    ["空字符串价格版本", { priceVersion: "" }, 400],
+    ["空白价格版本", { priceVersion: " " }, 400],
+    ["金额不匹配", { expectedCost: 0 }, 409],
+    ["价格版本不匹配", { priceVersion: "outdated" }, 409],
+    ["改变规格后沿用旧报价", { resolution: "1080p" }, 409],
+  ];
+  for (const [label, changes, status] of rejected) {
+    const response = await f.request("/jobs", { ...body, ...changes }, key);
+    assert.equal(response.status, status, label);
+    assert.equal(
+      response.data.error,
+      status === 400 ? "请先获取有效报价并确认积分成本。" : "报价已变化，请重新确认。",
+      label,
+    );
+    for (const table of ["jobs", "work", "job_input_assets"])
+      assert.equal(f.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, label);
+    assert.deepEqual(f.db.prepare("SELECT * FROM ledger ORDER BY id").all(), ledgerBefore, label);
+    const account = f.invariant();
+    assert.equal(account.credits, 300, label);
+    assert.equal(account.reserved, 0, label);
+  }
+  // Rejected submissions do not consume the request key; a confirmed retry may proceed.
+  const accepted = await f.request("/jobs", body, key);
+  assert.equal(accepted.status, 201);
+  const job = f.get(accepted.data.job.id);
+  assert.equal(job.cost, quote.data.cost);
+  assert.equal(JSON.parse(job.quote_snapshot).version, quote.data.version);
+  assert.equal(f.invariant().credits, 288);
+  assert.equal(f.invariant().reserved, 12);
+});
+
 test("浏览器丢失响应后凭原请求键找回任务；报价和模板版本随任务固定", async (t) => {
   const f = await fixture(t),
     job = await f.create("normal", { expectedCost: 12, priceVersion: "demo-v1" });
@@ -303,6 +484,20 @@ test("浏览器丢失响应后凭原请求键找回任务；报价和模板版�
     (await f.request("/jobs", { ...job.body, expectedCost: 0 }, randomUUID())).status,
     409,
   );
+  f.catalog.remove(f.template.id, f.template.updatedAt);
+  for (const changes of [
+    {},
+    { expectedCost: undefined, priceVersion: undefined },
+    { expectedCost: 0, priceVersion: "outdated" },
+  ]) {
+    const retry = await f.request("/jobs", { ...job.body, ...changes }, job.key);
+    assert.equal(retry.status, 200);
+    assert.equal(retry.data.job.id, job.id);
+    assert.equal(f.get(job.id).cost, 12);
+    assert.equal(JSON.parse(f.get(job.id).quote_snapshot).version, "demo-v1");
+  }
+  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 1);
+  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM ledger WHERE kind='hold'").get().n, 1);
   assert.equal(f.invariant().reserved, 12);
 });
 

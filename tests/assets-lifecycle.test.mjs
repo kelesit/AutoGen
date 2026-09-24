@@ -42,7 +42,7 @@ function fixture(t) {
   }
   return { ...f, db, dir, engine, generation, collection, create, drain };
 }
-test("共享参考被两个当前模板使用，最后引用解除后才可删除；新绑定拒绝 deleting", (t) => {
+test("共享参考由两个当前模板保护，最后引用解除后才清理", (t) => {
   const f = fixture(t);
   const body = {
     title: "第二个模板",
@@ -54,21 +54,18 @@ test("共享参考被两个当前模板使用，最后引用解除后才可删�
   };
   const second = f.catalog.createCurated("owner", "second-template", body).template;
   f.catalog.remove(f.template.id, f.template.updatedAt);
-  assert.throws(
-    () => f.assets.removeOwned(f.ref.id, "owner"),
-    (e) => e.status === 409,
-  );
+  f.assets.cleanup({ now: Date.now() + 48 * 3600000 });
+  assert.equal(f.assets.get(f.ref.id).state, "ready");
   f.catalog.remove(second.id, second.updatedAt);
-  f.assets.removeOwned(f.ref.id, "owner");
+  f.assets.cleanup({ now: Date.now() + 48 * 3600000 });
+  assert.equal(f.assets.get(f.ref.id).state, "deleted");
   assert.throws(
     () => f.catalog.createCurated("owner", "third-template", body),
     (e) => e.status === 400,
   );
-  f.assets.cleanup();
-  assert.equal(f.assets.get(f.ref.id).state, "deleted");
   assert.equal(existsSync(join(f.assets.directory, f.ref.filename)), false);
 });
-test("模板换参考并删除后，排队任务仍固定旧参考；取消任务才释放占用", (t) => {
+test("模板换参考并删除后，排队任务仍固定旧参考；取消任务才允许清理", (t) => {
   const f = fixture(t),
     job = f.create();
   const nextRef = f.assets.upload({
@@ -81,14 +78,9 @@ test("模板换参考并删除后，排队任务仍固定旧参考；取消任�
     referenceVideoIds: [nextRef.id],
   });
   f.catalog.remove(updated.id, updated.updatedAt);
-  assert.throws(
-    () => f.assets.removeOwned(f.ref.id, "owner"),
-    (e) => e.status === 409,
-  );
-  assert.throws(
-    () => f.assets.removeOwned(f.image.id, "owner"),
-    (e) => e.status === 409,
-  );
+  f.assets.cleanup({ now: Date.now() + 48 * 3600000 });
+  assert.equal(f.assets.get(f.ref.id).state, "ready");
+  assert.equal(f.assets.get(f.image.id).state, "ready");
   assert.equal(
     f.db
       .prepare("SELECT asset_id FROM job_input_assets WHERE job_id=? AND role='reference'")
@@ -96,8 +88,7 @@ test("模板换参考并删除后，排队任务仍固定旧参考；取消任�
     f.ref.id,
   );
   f.engine.cancel(job.id, "owner");
-  f.assets.removeOwned(f.ref.id, "owner");
-  f.assets.cleanup();
+  f.assets.cleanup({ now: Date.now() + 48 * 3600000 });
   assert.equal(f.assets.get(f.ref.id).state, "deleted");
 });
 test("作品删除立即撤销读取，账务与任务保留，文件删除失败可重试且不复活作品", async (t) => {
@@ -141,11 +132,15 @@ test("作品删除立即撤销读取，账务与任务保留，文件删除失�
     1,
   );
 });
-test("图片宽限期、素材库占用和 GC 批量扫描不会因被引用文件阻塞", (t) => {
+test("未引用的图片和模板视频到期清理，当前模板引用仍受保护", (t) => {
   const f = fixture(t);
   f.create();
-  for (let i = 0; i < 25; i++)
-    f.assets.upload({ ownerId: "owner", kind: "reference", bytes: Buffer.from("library") });
+  const orphanReference = f.assets.upload({
+    ownerId: "owner", kind: "reference", bytes: Buffer.from("unused reference"),
+  });
+  const orphanPreview = f.assets.upload({
+    ownerId: "owner", kind: "preview", bytes: Buffer.from("unused preview"),
+  });
   const abandoned = f.assets.upload({
     ownerId: "owner",
     kind: "image",
@@ -154,8 +149,10 @@ test("图片宽限期、素材库占用和 GC 批量扫描不会因被引用文�
   });
   f.assets.cleanup();
   assert.equal(f.assets.get(abandoned.id).state, "ready");
-  f.assets.cleanup({ now: Date.now() + 48 * 3600000, limit: 1 });
+  f.assets.cleanup({ now: Date.now() + 48 * 3600000, limit: 20 });
   assert.equal(f.assets.get(abandoned.id).state, "deleted");
+  assert.equal(f.assets.get(orphanReference.id).state, "deleted");
+  assert.equal(f.assets.get(orphanPreview.id).state, "deleted");
   assert.equal(f.assets.get(f.image.id).state, "ready");
   assert.equal(f.assets.get(f.ref.id).state, "ready");
 });

@@ -63,20 +63,16 @@ test("预置模板有独立版本和预览，用户按版本报价与提交", as
     200,
   );
   assert.equal((await request("/templates", { cookie })).data.templates[0].favorite, true);
-  assert.equal(
-    (
-      await request("/quote", {
-        method: "POST",
-        cookie,
-        body: {
-          templateId: template.id,
-          resolution: "720p",
-          duration: 4,
-        },
-      })
-    ).status,
-    200,
-  );
+  const quote = await request("/quote", {
+    method: "POST",
+    cookie,
+    body: {
+      templateId: template.id,
+      resolution: "720p",
+      duration: 4,
+    },
+  });
+  assert.equal(quote.status, 200);
   assert.equal(
     (
       await request("/quote", {
@@ -103,6 +99,8 @@ test("预置模板有独立版本和预览，用户按版本报价与提交", as
           uploadIds: {},
           resolution: "720p",
           duration: 4,
+          expectedCost: quote.data.cost,
+          priceVersion: quote.data.version,
         },
       })
     ).status,
@@ -133,6 +131,8 @@ test("预置模板有独立版本和预览，用户按版本报价与提交", as
       prompt: "",
       resolution: "720p",
       duration: 4,
+      expectedCost: quote.data.cost,
+      priceVersion: quote.data.version,
     },
   });
   assert.equal(generated.status, 201);

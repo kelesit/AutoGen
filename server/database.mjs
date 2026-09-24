@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-export const SCHEMA_VERSION = 100;
+export const SCHEMA_VERSION = 102;
 export function transact(db, fn) {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -20,6 +20,25 @@ export function openDatabase(dataDir) {
     db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
     const version = db.prepare("PRAGMA user_version").get().user_version;
     if (version === SCHEMA_VERSION) return db;
+    if (version === 100 || version === 101) {
+      transact(db, () => {
+        const lockedVersion = db.prepare("PRAGMA user_version").get().user_version;
+        if (lockedVersion === SCHEMA_VERSION) return;
+        if (lockedVersion !== 100 && lockedVersion !== 101)
+          throw new Error("开发数据库版本在升级期间发生了变化。");
+        if (lockedVersion === 100) {
+          db.exec("ALTER TABLE templates ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'");
+          db.exec("UPDATE templates SET tags=json_array(category) WHERE trim(category)<>''");
+        }
+        db.exec("ALTER TABLE jobs ADD COLUMN accepted_at INTEGER");
+        db.exec(`UPDATE jobs SET accepted_at=(
+          SELECT MIN(created_at) FROM job_events
+          WHERE job_id=jobs.id AND kind IN ('accepted','reconciled')
+        ) WHERE provider_id IS NOT NULL`);
+        db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
+      });
+      return db;
+    }
     if (
       version !== 0 ||
       db
@@ -40,7 +59,7 @@ export function openDatabase(dataDir) {
         library INTEGER NOT NULL DEFAULT 0 CHECK(library IN (0,1)),created_at INTEGER NOT NULL,
         expires_at INTEGER,deleted_at INTEGER,cleanup_error TEXT);
       CREATE TABLE templates(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),title TEXT NOT NULL,
-        description TEXT NOT NULL,category TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('public','private','deleted')),
+        description TEXT NOT NULL,category TEXT NOT NULL,tags TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL CHECK(status IN ('public','private','deleted')),
         current_version_id TEXT REFERENCES template_versions(id),preview_asset_id TEXT REFERENCES assets(id),
         create_key TEXT NOT NULL,create_payload TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
         published_at INTEGER,UNIQUE(owner_id,create_key));
@@ -53,7 +72,7 @@ export function openDatabase(dataDir) {
         template_version_id TEXT NOT NULL REFERENCES template_versions(id),
         prompt TEXT NOT NULL,resolution TEXT NOT NULL,duration INTEGER NOT NULL,cost INTEGER NOT NULL,
         status TEXT NOT NULL CHECK(status IN ('queued','submitting','submission_unknown','running','persisting','needs_review','completed','failed','cancelled')),
-        progress INTEGER NOT NULL DEFAULT 0,error TEXT,request_key TEXT NOT NULL,created_at INTEGER NOT NULL,completed_at INTEGER,
+        progress INTEGER NOT NULL DEFAULT 0,error TEXT,request_key TEXT NOT NULL,created_at INTEGER NOT NULL,accepted_at INTEGER,completed_at INTEGER,
         billing_state TEXT NOT NULL CHECK(billing_state IN ('held','settled','released')),scenario TEXT NOT NULL,
         provider_id TEXT,template_snapshot TEXT NOT NULL,quote_snapshot TEXT NOT NULL,retries INTEGER NOT NULL DEFAULT 0,
         review_phase TEXT,input_digest TEXT,input_assets_snapshot TEXT NOT NULL,UNIQUE(user_id,request_key));

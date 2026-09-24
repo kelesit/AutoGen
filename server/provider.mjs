@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 const sample = fileURLToPath(new URL("../public/media/sample.mp4", import.meta.url));
 const error = (code, message) => Object.assign(new Error(message), { code });
-export function createProvider(dataDir, duration = 14000) {
+export function createProvider(dataDir, duration = 60000) {
   const db = new DatabaseSync(path.join(dataDir, "provider.sqlite"));
   db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
  CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,business_key TEXT UNIQUE NOT NULL,scenario TEXT NOT NULL,payload TEXT NOT NULL,ready_at INTEGER NOT NULL,created_at INTEGER NOT NULL);

@@ -54,6 +54,24 @@ function fixture(t) {
 }
 const rejects = (fn, status) => assert.throws(fn, (error) => error.status === status);
 
+test("发布模板校验素材归属和必填配置，失败后可用原请求标识更正发布", (t) => {
+  const { db, service, body } = fixture(t);
+  const key = "catalog-invalid-then-valid";
+  for (const change of [
+    { referenceVideoIds: [] },
+    { referenceVideoIds: ["foreign-ref"] },
+    { previewVideoId: "foreign-ref" },
+    { inputSlots: [] },
+    { outputOptions: { ...body.outputOptions, allowedDurations: [] } },
+  ]) {
+    rejects(() => service.createCurated("admin", key, { ...body, ...change }), 400);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM templates").get().n, 0);
+  }
+  const template = service.createCurated("admin", key, body).template;
+  assert.equal(template.status, "public");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM templates").get().n, 1);
+});
+
 test("目录查询支持组合筛选、稳定分页和无结果，拒绝非法条件", (t) => {
   const { service, create } = fixture(t);
   const a = create("create-a-001");
@@ -68,6 +86,38 @@ test("目录查询支持组合筛选、稳定分页和无结果，拒绝非法�
   for (const query of [{ page: "0" }, { pageSize: "101" }, { status: "bad" }, { q: [] }])
     rejects(() => service.queryAdmin(query), 400);
   rejects(() => service.detailAdmin("missing"), 404);
+});
+
+test("模板支持多个自定义标签，标签可搜索、编辑且输入受校验", (t) => {
+  const { service, create } = fixture(t);
+  const created = create("create-tags-001", { tags: ["海边", "双人"] });
+  assert.deepEqual(created.tags, ["海边", "双人"]);
+  assert.deepEqual(service.listPublic(null)[0].tags, ["海边", "双人"]);
+  assert.equal(service.queryAdmin({ q: "海边" }).templates[0].id, created.id);
+  const updated = service.updateCurated("admin", created.id, {
+    expectedUpdatedAt: created.updatedAt,
+    tags: ["旅行", "慢镜头"],
+  });
+  assert.deepEqual(updated.tags, ["旅行", "慢镜头"]);
+  assert.equal(service.queryAdmin({ q: "海边" }).total, 0);
+  assert.equal(service.queryAdmin({ q: "慢镜头" }).total, 1);
+  for (const tags of [["重复", "重复"], [""], Array(13).fill("太多")])
+    rejects(() => create(`bad-tags-${tags.length}`, { tags }), 400);
+});
+
+test("已有目录升级后将原分类保留为可搜索标签", (t) => {
+  const { db, create } = fixture(t);
+  const original = create("create-migrate-001", { category: "复古" });
+  db.exec("ALTER TABLE templates DROP COLUMN tags");
+  db.exec("ALTER TABLE jobs DROP COLUMN accepted_at");
+  db.exec("PRAGMA user_version=100");
+  const reopened = openDatabase(db.prepare("PRAGMA database_list").get().file.replace(/\/playbox\.sqlite$/, ""));
+  t.after(() => reopened.close());
+  const migratedService = createCatalogService(reopened, null);
+  const migrated = migratedService.detailAdmin(original.id);
+  assert.deepEqual(migrated.tags, ["复古"]);
+  assert.equal(migratedService.queryAdmin({ q: "复古" }).templates[0].id, original.id);
+  assert.equal(reopened.prepare("PRAGMA user_version").get().user_version, 102);
 });
 
 test("完整编辑创建新版本，历史快照与原始版本不变，并发修改和非法配置不落库", (t) => {

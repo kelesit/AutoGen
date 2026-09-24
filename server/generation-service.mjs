@@ -90,6 +90,15 @@ export function createGenerationService({ db, catalog, assets, event }) {
         throw fail(409, "模板版本已变化，请刷新后重新提交。");
       const currentQuote = calculateQuote(template, resolution, duration);
       if (
+        !Number.isSafeInteger(expectedCost) ||
+        expectedCost < 0 ||
+        typeof clientPriceVersion !== "string" ||
+        !clientPriceVersion.trim()
+      )
+        throw fail(400, "请先获取有效报价并确认积分成本。");
+      if (expectedCost !== currentQuote.cost || clientPriceVersion !== currentQuote.version)
+        throw fail(409, "报价已变化，请重新确认。");
+      if (
         typeof prompt !== "string" ||
         prompt.length > 500 ||
         !scenarios.includes(scenario) ||
@@ -112,11 +121,6 @@ export function createGenerationService({ db, catalog, assets, event }) {
       template.motionVideoIds.forEach((id) => assets.requireReady(id, { kind: "reference" }));
       const inputSnapshot = JSON.stringify(inputAssets);
 
-      if (
-        (expectedCost !== undefined && expectedCost !== currentQuote.cost) ||
-        (clientPriceVersion !== undefined && clientPriceVersion !== currentQuote.version)
-      )
-        throw fail(409, "报价已变化，请重新确认。");
       const active = db
         .prepare(
           "SELECT COUNT(*) AS n FROM jobs WHERE user_id=? AND status NOT IN ('completed','failed','cancelled')",

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "./api";
 import type { AdminTemplate } from "./types";
+import { TagInput } from "./TagInput";
 
 const statusLabel: Record<string, string> = {
   public: "已上架",
@@ -12,7 +13,6 @@ type Listing = {
   total: number;
   page: number;
   pageSize: number;
-  categories: string[];
 };
 const when = (time?: number) => (time ? new Date(time).toLocaleString("zh-CN") : "—");
 
@@ -25,14 +25,12 @@ export function CatalogManager({
 }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
-  const [category, setCategory] = useState("");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<Listing>({
     templates: [],
     total: 0,
     page: 1,
     pageSize: 10,
-    categories: [],
   });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -48,7 +46,7 @@ export function CatalogManager({
     setError("");
     try {
       const result = await api<Listing>(
-        `/admin/catalog-templates?${new URLSearchParams({ q: query, status, category, page: String(page) })}`,
+        `/admin/catalog-templates?${new URLSearchParams({ q: query, status, page: String(page) })}`,
       );
       if (id === request.current) {
         setData(result);
@@ -66,7 +64,7 @@ export function CatalogManager({
       clearTimeout(timer);
       request.current++;
     };
-  }, [query, status, category, page]);
+  }, [query, status, page]);
   async function open(item: AdminTemplate, edit: boolean) {
     setBusy(true);
     setError("");
@@ -179,10 +177,10 @@ export function CatalogManager({
             <dd>
               {statusLabel[detail.status || "private"]} · v{detail.version}
             </dd>
-            <dt>分类 / 创建者</dt>
-            <dd>
-              {detail.category} · {detail.creator}
-            </dd>
+            <dt>创建者</dt>
+            <dd>{detail.creator}</dd>
+            <dt>标签</dt>
+            <dd><div className="template-tags">{detail.tags.length ? detail.tags.map((tag) => <span className="template-tag" key={tag}>{tag}</span>) : "暂无标签"}</div></dd>
             <dt>创建 / 修改时间</dt>
             <dd>
               {when(detail.createdAt)} / {when(detail.updatedAt)}
@@ -265,21 +263,6 @@ export function CatalogManager({
               ))}
             </select>
           </label>
-          <label>
-            模板分类
-            <select
-              value={category}
-              onChange={(e) => {
-                setCategory(e.target.value);
-                setPage(1);
-              }}
-            >
-              <option value="">全部分类</option>
-              {data.categories.map((value) => (
-                <option key={value}>{value}</option>
-              ))}
-            </select>
-          </label>
           <button className="button" disabled={loading || busy} onClick={() => void refresh()}>
             刷新列表
           </button>
@@ -293,7 +276,7 @@ export function CatalogManager({
                 <thead>
                   <tr>
                     <th>模板</th>
-                    <th>分类</th>
+                    <th>标签</th>
                     <th>状态 / 版本</th>
                     <th>引用任务</th>
                     <th>修改时间</th>
@@ -307,7 +290,7 @@ export function CatalogManager({
                         <strong>{item.title}</strong>
                         <small>{item.id.slice(0, 8)}</small>
                       </td>
-                      <td>{item.category}</td>
+                      <td>{item.tags.join("、") || "—"}</td>
                       <td>
                         {statusLabel[item.status || "private"]} · v{item.version}
                       </td>
@@ -398,7 +381,7 @@ function TemplateEditor({
 }) {
   const [title, setTitle] = useState(template.title);
   const [description, setDescription] = useState(template.subtitle);
-  const [category, setCategory] = useState(template.category);
+  const [tags, setTags] = useState(template.tags);
   const [slots, setSlots] = useState(template.inputSlots);
   const [status, setStatus] = useState(template.status === "public" ? "public" : "private");
   const [prompt, setPrompt] = useState(template.promptRecipe);
@@ -440,7 +423,7 @@ function TemplateEditor({
           expectedUpdatedAt: template.updatedAt,
           title,
           description,
-          category,
+          tags,
           inputSlots: slots,
           status,
           referenceVideoIds: [...references, ...added],
@@ -507,15 +490,7 @@ function TemplateEditor({
             onChange={(e) => setDescription(e.target.value)}
           />
         </label>
-        <label>
-          修改分类
-          <input
-            required
-            maxLength={30}
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-          />
-        </label>
+        <TagInput tags={tags} onChange={setTags} />
         <h4>图片槽位</h4>
         {slots.map((slot, index) => (
           <div key={slot.key} className="catalog-asset-group">
