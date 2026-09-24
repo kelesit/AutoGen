@@ -1,0 +1,26 @@
+{
+  "template": {
+    "id": "two-person-action",
+    "version": 1,
+    "inputSlots": [
+      { "key": "person_a", "kind": "person", "sourceRole": "the left performer" },
+      { "key": "person_b", "kind": "person", "sourceRole": "the right performer" }
+    ],
+    "motionClips": [
+      { "assetId": "motion_clip_1", "durationSeconds": 6 }
+    ],
+    "promptRecipe": "Preserve the action order and camera movement in reference video 1.",
+    "output": { "duration": 6, "resolution": "768P", "ratio": "9:16" },
+    "previewAssetId": "example_output"
+  },
+  "inputAssetIds": {
+    "person_a": "person_a_image",
+    "person_b": "person_b_image"
+  },
+  "assetUrls": {
+    "motion_clip_1": "https://storage.example.test/motion.mp4",
+    "person_a_image": "https://storage.example.test/person-a.jpg",
+    "person_b_image": "https://storage.example.test/person-b.jpg"
+  },
+  "outputDir": "./experiments/h3-motion/output"
+}

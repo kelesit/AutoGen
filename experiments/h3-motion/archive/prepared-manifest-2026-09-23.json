@@ -1,0 +1,25 @@
+{
+  "templateId": "two-person-action",
+  "templateVersion": 1,
+  "imageSlots": {
+    "person_a": "person_a_image",
+    "person_b": "person_b_image"
+  },
+  "sourceRoles": {
+    "person_a": "the left performer",
+    "person_b": "the right performer"
+  },
+  "motionClipIds": [
+    "motion_clip_1"
+  ],
+  "previewAssetId": "example_output",
+  "inputVideoSeconds": 6,
+  "requestSha256": "2bf5a001fc9696937868b02e367604355bb1bb06e62424064ac2cdd3f21dedb9",
+  "model": "MiniMax-H3",
+  "resolution": "768P",
+  "duration": 6,
+  "ratio": "9:16",
+  "compiledPrompt": "Use the reference video for the temporal action, its sequence and timing. Use the reference images for appearance and identity. Keep the identities consistent; do not copy the source video's people merely because they appear in the motion reference. Reference image 1 supplies the appearance of person_a. Map this image to the left performer in the reference video. Reference image 2 supplies the appearance of person_b. Map this image to the right performer in the reference video. Preserve the action order and camera movement in reference video 1.",
+  "status": "prepared",
+  "createdAt": "2026-09-23T06:07:11.010Z"
+}

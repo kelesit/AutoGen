@@ -1,0 +1,38 @@
+{
+  "name": "playbox-fullstack-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:client": "vp dev --host 127.0.0.1",
+    "dev:server": "node --watch server/index.mjs",
+    "build": "tsc -b && vp build",
+    "start": "node scripts/start.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "worker": "node server/worker.mjs",
+    "test:experiments": "node --test experiments/h3-motion/*.test.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "multer": "^2.0.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "sharp": "^0.35.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.9.2",
+    "vite-plus": "0.3.3"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

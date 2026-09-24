@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.data/
+.data-v2/
+.env
+*.tsbuildinfo
+output/
+.playwright-cli/
+experiments/h3-motion/output/
